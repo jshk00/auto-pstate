@@ -1,153 +1,177 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"fmt"
-	"log/slog"
+	"log"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
-
-	"github.com/godbus/dbus/v5"
+	"syscall"
+	"time"
 )
 
 const (
-	eppStateAC        = "balance_performance"
-	eppStateBat       = "power"
+	defaultEppStateAC  = "balance_performance"
+	defaultEppStateBat = "power"
+	defaultGovernor    = "powersave"
+
 	scalingDriverPath = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_driver"
 	governerPath      = "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor"
 	eppPath           = "/sys/devices/system/cpu/cpu%d/cpufreq/energy_performance_preference"
-	upowerPath        = "/org/freedesktop/UPower/devices/line_power_AC"
+	preferences       = "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences"
 )
 
-var log *slog.Logger
-
+// main validates environment, then executes either auto or manual mode.
 func main() {
-	log.Info("started auto pstate service")
-	IsRoot()
-	IsPState()
-	SetGoverner()
-	FirstBoot()
-	SetState()
-}
+	log.SetFlags(0)
+	auto := flag.Bool("auto", false, "start the pstate auto setter based on power")
+	flag.Parse()
 
-func init() {
-	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
-	log = slog.New(h)
-}
+	if err := isRoot(); err != nil {
+		log.Fatalf("[ERROR] %v\n", err)
+	}
+	if err := isPState(); err != nil {
+		log.Fatalf("[ERROR] %v\n", err)
+	}
 
-// checks if script is run by root or not
-func IsRoot() {
-	if os.Geteuid() != 0 {
-		log.Error("script must be run with root")
+	if *auto {
+		if err := runAuto(); err != nil {
+			log.Fatalf("[ERROR] %v\n", err)
+		}
+	}
+
+	if err := runManual(); err != nil {
+		log.Fatalf("[ERROR] %v\n", err)
 	}
 }
 
-// check if amd-pstate-driver present
-func IsPState() {
-	b, err := os.ReadFile(scalingDriverPath)
+// runAuto sets the governor, applies initial EPP state,
+// and listens for AC adapter change events to update EPP dynamically.
+func runAuto() error {
+	if err := setGovernor(); err != nil {
+		return err
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return setAutoState(ctx)
+}
+
+// runManual lists available EPP profiles and applies the user selection.
+func runManual() error {
+	b, err := os.ReadFile(preferences)
 	if err != nil {
-		log.Error("file does not exists for scaling driver", slog.String("err", err.Error()))
+		return fmt.Errorf("failed to list preferences: %w", err)
 	}
-	if strings.TrimSpace(string(b)) != "amd-pstate-epp" {
-		log.Error("system is not running amd-pstate-epp")
+
+	entries := strings.Fields(strings.TrimSpace(string(b)))
+	m := make(map[int]string, len(entries))
+	for i, p := range entries {
+		m[i+1] = p
+		fmt.Printf("%d] %s\n", i+1, p)
 	}
+
+	var choice int
+	fmt.Print("select one from above: ")
+	if _, err := fmt.Scanf("%d", &choice); err != nil {
+		return errors.New("invalid input")
+	}
+	profile, ok := m[choice]
+	if !ok {
+		return errors.New("option is not available")
+	}
+
+	return setEPP(profile)
 }
 
-// execute only when laptop boots
-// or service restarted
-func FirstBoot() {
-	switch charging() {
-	case true:
-		SetEPP(eppStateAC)
-		log.Info("epp state set to balance_performance")
-	case false:
-		SetEPP(eppStateBat)
-		log.Info("epp state set to power")
+// setAutoState listens to kernel uevents for AC state changes
+// and adjusts EPP between AC and battery profiles.
+func setAutoState(ctx context.Context) error {
+	run := true
+	currentProfile := ""
+	go func() { <-ctx.Done(); run = false }()
+	for run {
+		c, err := charging()
+		if err != nil {
+			return err
+		}
+		if c && currentProfile != defaultEppStateAC {
+			log.Println("[INFO] setting epp state to balance_performance")
+			currentProfile = defaultEppStateAC
+			_ = setEPP(defaultEppStateAC)
+		}
+		if !c && currentProfile != defaultEppStateBat {
+			log.Println("[INFO] setting epp state to power")
+			currentProfile = defaultEppStateBat
+			_ = setEPP(defaultEppStateBat)
+		}
+		time.Sleep(5 * time.Second)
 	}
+	return errors.New("closed")
 }
 
-// polling sysfs it checks wether devices on charging
-func charging() bool {
-	batPath := "/sys/class/power_supply/AC/online"
-	b, err := os.ReadFile(batPath)
-	if err != nil {
-		slog.Warn("file not found for AC")
-		os.Exit(1)
-	}
-	return strings.TrimSpace(string(b)) == "1"
-}
-
-// set the powersave governer if not already set
-func SetGoverner() {
+// setGovernor ensures all cores use the default CPU frequency governor.
+func setGovernor() error {
 	b, err := os.ReadFile(fmt.Sprintf(governerPath, 0))
 	if err != nil {
-		log.Warn("governer file does not exists")
+		return errors.New("governor file does not exist")
 	}
-	if string(b) != "powersave" {
+
+	if strings.TrimSpace(string(b)) != defaultGovernor {
 		for i := 0; i < runtime.NumCPU(); i++ {
-			if err := os.WriteFile(fmt.Sprintf(governerPath, i),
-				[]byte("powersave"), os.ModePerm); err != nil {
-				log.Error(
-					"while setting powersave governer",
-					slog.Int("core", i),
-					slog.String("err", err.Error()),
-				)
-				continue
+			err := os.WriteFile(
+				fmt.Sprintf(governerPath, i),
+				[]byte(defaultGovernor),
+				os.ModePerm,
+			)
+			if err != nil {
+				return fmt.Errorf("err: %w, while setting governor on core %d", err, i)
 			}
 		}
 	}
+	return nil
 }
 
-// set epp value for performance and power consumption
-func SetEPP(val string) {
+// setEPP sets the EPP policy on all CPU cores.
+func setEPP(val string) error {
 	for i := 0; i < runtime.NumCPU(); i++ {
 		err := os.WriteFile(fmt.Sprintf(eppPath, i), []byte(val), os.ModePerm)
 		if err != nil {
-			log.Error(
-				"while setting epp_value",
-				slog.String("value", val),
-				slog.Int("core", i),
-				slog.String("err", err.Error()),
-			)
-			continue
+			return fmt.Errorf("err: %w, while setting epp_value %s on core %d", err, val, i)
 		}
 	}
+	return nil
 }
 
-// listens for he dbus event and sets the performance governer
-func SetState() {
-	// after first run whenever charhing changes so does our epp-state
-	conn, err := dbus.SystemBus()
+// isRoot returns an error if the program is not running as root.
+func isRoot() error {
+	if os.Geteuid() != 0 {
+		return errors.New("script must be run with root")
+	}
+	return nil
+}
+
+// isPState checks whether the amd-pstate-epp driver is active.
+func isPState() error {
+	b, err := os.ReadFile(scalingDriverPath)
 	if err != nil {
-		log.Error("unable to connect to system bus", slog.String("err", err.Error()))
-		return
+		return fmt.Errorf("file does not exist for scaling driver: %w", err)
 	}
-	defer conn.Close()
-
-	signal := make(chan *dbus.Signal, 10)
-	conn.Signal(signal)
-
-	if err = conn.AddMatchSignal(
-		dbus.WithMatchObjectPath(dbus.ObjectPath(upowerPath)),
-	); err != nil {
-		log.Error(err.Error())
-		os.Exit(1)
+	if strings.TrimSpace(string(b)) != "amd-pstate-epp" {
+		return errors.New("system is not running amd-pstate-epp")
 	}
+	return nil
+}
 
-	for msg := range signal {
-		if msg.Name == "org.freedesktop.DBus.Properties.PropertiesChanged" {
-			m, ok := msg.Body[1].(map[string]dbus.Variant)
-			if ok {
-				switch m["Online"].Value().(bool) {
-				case true:
-					SetEPP(eppStateAC)
-					log.Info("epp state set to balance_performance")
-				case false:
-					SetEPP(eppStateBat)
-					log.Info("epp state set to power")
-				}
-			}
-
-		}
+// charging returns true if AC adapter is currently online.
+func charging() (bool, error) {
+	b, err := os.ReadFile("/sys/class/power_supply/AC/online")
+	if err != nil {
+		return false, fmt.Errorf("file not found for AC: %w", err)
 	}
+	return strings.TrimSpace(string(b)) == "1", nil
 }
