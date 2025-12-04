@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -30,55 +30,85 @@ var client = &http.Client{
 }
 
 func main() {
+	log.SetFlags(0)
 	switch arg(1) {
 	case "list-prefs":
-		prefs, err := internal.GetPreferences()
-		if err != nil {
-			log.Fatal(err)
-		}
-		for _, p := range prefs {
-			fmt.Println(p)
-		}
+		listPrefs()
 	case "status":
-		res, err := client.Post("http://localhost:9010/status", "", nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer res.Body.Close()
-		b, _ := io.ReadAll(res.Body)
-		fmt.Println(string(b))
+		status()
 	case "set":
-		profile := arg(2)
-		if profile == "" {
-			log.Fatal("set require addtional argument profile") //nolint
-		}
-		res, err := client.Post("http://localhost:9010/set/"+profile, "", nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer res.Body.Close()
-		if res.StatusCode == http.StatusBadRequest {
-			log.Printf("%s profile is invalid\n", profile)
-			return
-		}
-		log.Printf("successfully set profile %s and manual mode has been enabled\n", profile)
+		set()
 	case "auto":
-		on := arg(2)
-		if on == "on" || on == "off" {
-			res, err := client.Post("http://localhost:9010/auto/"+on, "", nil)
-			if err != nil {
-				log.Println(err)
-			}
-			defer res.Body.Close()
-			if res.StatusCode == http.StatusOK {
-				fmt.Println("pstated auto mode has been set to", on)
-			}
-			return
-		}
-		fmt.Println("invalid option should be on/off")
+		auto()
 	default:
 		fmt.Print(banner)
 	}
+}
+
+func status() {
+	res, err := client.Post("http://localhost:9010/status", "", nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer res.Body.Close()
+	var info map[string]string
+	if err = json.NewDecoder(res.Body).Decode(&info); err != nil {
+		log.Println(err)
+		return
+	}
+	for k, v := range info {
+		log.Printf("%s --> %s\n", k, v)
+	}
+}
+
+func listPrefs() {
+	prefs, err := internal.GetPreferences()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	for _, p := range prefs {
+		fmt.Println(p)
+	}
+}
+
+func set() {
+	profile := arg(2)
+	if profile == "" {
+		log.Fatal("set requires addtional argument profile") //nolint
+	}
+	res, err := client.Post("http://localhost:9010/set/"+profile, "", nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusBadRequest {
+		log.Printf("%s profile is invalid\n", profile)
+		return
+	}
+	log.Printf("p-state set to %s(manual mode)\n", profile)
+}
+
+func auto() {
+	on := arg(2)
+	if on == "on" || on == "off" {
+		res, err := client.Post("http://localhost:9010/auto/"+on, "", nil)
+		if err != nil {
+			log.Println(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode == http.StatusOK {
+			if on == "on" {
+				log.Println("auto mode enabled")
+				return
+			}
+			log.Println("auto mode disabled")
+		}
+		return
+	}
+	fmt.Println("invalid option should be on/off")
 }
 
 func arg(i int) string {
