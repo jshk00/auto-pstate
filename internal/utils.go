@@ -10,15 +10,15 @@ import (
 
 // setGovernor ensures all cores use the default CPU frequency governor.
 func SetGovernor() error {
-	b, err := os.ReadFile(fmt.Sprintf(GovernerPath, 0))
+	b, err := os.ReadFile(fmt.Sprintf(governerPath, 0))
 	if err != nil {
 		return errors.New("governor file does not exist")
 	}
-	if strings.TrimSpace(string(b)) != DefaultGovernor {
+	if strings.TrimSpace(string(b)) != defaultGovernor {
 		for i := 0; i < runtime.NumCPU(); i++ {
 			err := os.WriteFile(
-				fmt.Sprintf(GovernerPath, i),
-				[]byte(DefaultGovernor),
+				fmt.Sprintf(governerPath, i),
+				[]byte(defaultGovernor),
 				os.ModePerm,
 			)
 			if err != nil {
@@ -32,7 +32,7 @@ func SetGovernor() error {
 // setEPP sets the EPP policy on all CPU cores.
 func SetEPP(val string) error {
 	for i := 0; i < runtime.NumCPU(); i++ {
-		err := os.WriteFile(fmt.Sprintf(EppPath, i), []byte(val), os.ModePerm)
+		err := os.WriteFile(fmt.Sprintf(eppPath, i), []byte(val), os.ModePerm)
 		if err != nil {
 			return fmt.Errorf("err: %w, while setting epp_value %s on core %d", err, val, i)
 		}
@@ -41,11 +41,11 @@ func SetEPP(val string) error {
 }
 
 func GetEPP() (string, error) {
-	b, err := os.ReadFile(fmt.Sprintf(EppPath, 0))
+	b, err := os.ReadFile(fmt.Sprintf(eppPath, 0))
 	if err != nil {
 		return "", fmt.Errorf("unable to get current_profile: %w", err)
 	}
-	return string(b), nil
+	return strings.TrimRight(string(b), "\n"), nil
 }
 
 // isRoot returns an error if the program is not running as root.
@@ -58,7 +58,7 @@ func IsRoot() error {
 
 // isPState checks whether the amd-pstate-epp driver is active.
 func IsPState() error {
-	b, err := os.ReadFile(ScalingDriverPath)
+	b, err := os.ReadFile(scalingDriverPath)
 	if err != nil {
 		return fmt.Errorf("file does not exist for scaling driver: %w", err)
 	}
@@ -68,8 +68,19 @@ func IsPState() error {
 	return nil
 }
 
+func FirstBoot() error {
+	c, err := charging()
+	if err != nil {
+		return err
+	}
+	if c {
+		return SetEPP(defaultEppStateAC)
+	}
+	return SetEPP(defaultEppStateBat)
+}
+
 // charging returns true if AC adapter is currently online.
-func Charging() (bool, error) {
+func charging() (bool, error) {
 	b, err := os.ReadFile("/sys/class/power_supply/AC/online")
 	if err != nil {
 		return false, fmt.Errorf("file not found for AC: %w", err)
@@ -79,7 +90,7 @@ func Charging() (bool, error) {
 
 // List the available preference in epp profiles
 func GetPreferences() ([]string, error) {
-	b, err := os.ReadFile(Preferences)
+	b, err := os.ReadFile(preferences)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list preferences: %w", err)
 	}
