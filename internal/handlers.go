@@ -51,13 +51,17 @@ func (s *Server) handleSetEPP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAutoON(w http.ResponseWriter, r *http.Request) {
 	m := r.PathValue("mode")
-	mode := auto
-	if m == "off" {
-		mode = manual
-	}
+	mode := manual
 	if m != "on" && m != "off" {
 		http.Error(w, "invalid option auto path param should be on/off", http.StatusBadRequest)
 		return
+	}
+	if m == "on" {
+		mode = auto
+		if err := FirstBoot(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	s.autoepp.SetMode(mode)
 	log.Printf("[INFO] mode set to %s\n", mode)
