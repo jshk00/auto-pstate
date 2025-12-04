@@ -68,6 +68,7 @@ func IsPState() error {
 	return nil
 }
 
+// FirstBoot sets the profile on first boot
 func FirstBoot() error {
 	c, err := charging()
 	if err != nil {

@@ -28,6 +28,9 @@ func run() error {
 	if err := internal.SetGovernor(); err != nil {
 		return err
 	}
+	if err := internal.FirstBoot(); err != nil {
+		return err
+	}
 
 	perfs, err := internal.GetPreferences()
 	if err != nil {
