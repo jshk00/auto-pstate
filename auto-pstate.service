@@ -5,7 +5,7 @@ After=network.target network-online.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/auto-pstate
+ExecStart=/usr/bin/pstated
 Restart=on-failure
 
 [Install]
