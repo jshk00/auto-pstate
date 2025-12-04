@@ -14,7 +14,7 @@
 
 ### One-line Installation
 ```sh
-curl -sSL https://github.com/jshk00/auto-pstate/releases/download/0.0.2/install | sudo bash
+curl -sSL https://github.com/jshk00/auto-pstate/releases/download/0.0.3/install | sudo bash
 ```
 
 ### Build from source
