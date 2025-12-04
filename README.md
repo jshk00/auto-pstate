@@ -30,6 +30,7 @@ sudo ./install.sh
 sudo systemctl disable --now auto-pstate.service
 sudo rm -rf /run/pstated
 sudo rm -rf /usr/bin/pstated /usr/bin/pdctl
+sudo rm -rf /etc/systemd/system/auto-pstate.service
 ```
 
 ## Usage
