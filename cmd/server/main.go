@@ -37,6 +37,12 @@ func run() error {
 		return err
 	}
 
+	if err := os.Mkdir("/run/pstated/", 0o600); err != nil {
+		if !os.IsExist(err) {
+			return err
+		}
+	}
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 
